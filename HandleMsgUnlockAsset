@@ -1,0 +1,105 @@
+package ibc
+
+import (
+	"fmt"
+	"time"
+
+	sdk "github.com/cosmos/cosmos-sdk/types"
+)
+
+// LockedAsset represents a locked asset on the Cosmos chain
+type LockedAsset struct {
+	Owner      sdk.AccAddress `json:"owner"`
+	Amount     sdk.Coin       `json:"amount"`
+	EvmChain   string         `json:"evm_chain"`
+	LockTime   time.Time      `json:"lock_time"`
+	UnlockTime time.Time      `json:"unlock_time"`
+}
+
+// MsgLockAsset defines the LockAsset message
+type MsgLockAsset struct {
+	Sender     sdk.AccAddress `json:"sender"`
+	Amount     sdk.Coin       `json:"amount"`
+	EvmChain   string         `json:"evm_chain"`
+	LockTime   time.Time      `json:"lock_time"`
+	UnlockTime time.Time      `json:"unlock_time"`
+}
+
+// MsgUnlockAsset defines the UnlockAsset message
+type MsgUnlockAsset struct {
+	Owner    sdk.AccAddress `json:"owner"`
+	Amount   sdk.Coin       `json:"amount"`
+	EvmChain string         `json:"evm_chain"`
+}
+
+// MsgQueryLockedAsset defines the QueryLockedAsset message
+type MsgQueryLockedAsset struct {
+	Owner    sdk.AccAddress `json:"owner"`
+	EvmChain string         `json:"evm_chain"`
+}
+
+// HandleMsgLockAsset handles the LockAsset message
+func HandleMsgLockAsset(ctx sdk.Context, k Keeper, msg MsgLockAsset) sdk.Result {
+	// Deduct the asset from the sender's account
+	err := k.bankKeeper.SendCoins(ctx, msg.Sender, sdk.AccAddress{}, sdk.Coins{msg.Amount})
+	if err != nil {
+		return err.Result()
+	}
+
+	// Store the locked asset information
+	lockedAsset := LockedAsset{
+		Owner:      msg.Sender,
+		Amount:     msg.Amount,
+		EvmChain:   msg.EvmChain,
+		LockTime:   msg.LockTime,
+		UnlockTime: msg.UnlockTime,
+	}
+	k.SetLockedAsset(ctx, lockedAsset)
+
+	return sdk.Result{Code: sdk.CodeOK}
+}
+
+// HandleMsgUnlockAsset handles the UnlockAsset message
+func HandleMsgUnlockAsset(ctx sdk.Context, k Keeper, msg MsgUnlockAsset) sdk.Result {
+	// Retrieve the locked asset information
+	lockedAsset, found := k.GetLockedAsset(ctx, msg.Owner, msg.EvmChain)
+	if !found {
+		return sdk.ErrUnknownRequest(fmt.Sprintf("locked asset not found for owner %s on EVM chain %s", msg.Owner, msg.EvmChain)).Result()
+	}
+
+	// Check if it's time to unlock
+	if ctx.BlockHeader().Time.Before(lockedAsset.UnlockTime) {
+		return sdk.ErrUnauthorized("it's not yet time to unlock the asset").Result()
+	}
+
+	// Transfer the locked asset back to the owner
+	err := k.bankKeeper.SendCoins(ctx, sdk.AccAddress{}, msg.Owner, sdk.Coins{lockedAsset.Amount})
+	if err != nil {
+		return err.Result()
+	}
+
+	// Remove the locked asset record
+	k.DeleteLockedAsset(ctx, lockedAsset)
+
+	return sdk.Result{Code: sdk.CodeOK}
+}
+
+// HandleMsgQueryLockedAsset handles the QueryLockedAsset message
+func HandleMsgQueryLockedAsset(ctx sdk.Context, k Keeper, msg MsgQueryLockedAsset) sdk.Result {
+	// Retrieve the locked asset information
+	lockedAsset, found := k.GetLockedAsset(ctx, msg.Owner, msg.EvmChain)
+	if !found {
+		return sdk.ErrUnknownRequest(fmt.Sprintf("locked asset not found for owner %s on EVM chain %s", msg.Owner, msg.EvmChain)).Result()
+	}
+
+	// Encode and return the locked asset information
+	bz, err := k.cdc.MarshalJSON(lockedAsset)
+	if err != nil {
+		return sdk.ErrJSONMarshal(err.Error()).Result()
+	}
+
+	return sdk.Result{
+		Code: sdk.CodeOK,
+		Data: bz,
+	}
+}
